@@ -28,7 +28,7 @@ uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 if uploaded_file is not None:
 
     # Load dataset
-    df_full = pd.read_csv(uploaded_file)
+    df_full = pd.read_csv("amazon_sample_15k.csv")
     df = df_full.sample(n=min(15000, len(df_full)), random_state=42)
 
     st.success(f"Loaded {len(df)} rows")
