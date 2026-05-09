@@ -28,67 +28,23 @@ st.set_page_config(
 )
 
 st.title("Amazon Product Return Prediction")
-st.write("Machine Learning model using PCA + SVM")
+st.write("Optimized PCA + SVM Streamlit ML App")
 
 
 # -------------------------------------------------
-# LOAD DATASET
+# LOAD DATA
 # -------------------------------------------------
 @st.cache_data
 def load_data():
-    df = pd.read_csv("amazon_sample_15k.csv")
-    return df
+    return pd.read_csv("amazon_sample_15k.csv")
 
 
-with st.spinner("Loading dataset..."):
-    df = load_data()
-
-st.success(f"Dataset loaded successfully! ({len(df)} rows)")
+df = load_data()
+st.success(f"Dataset loaded ({len(df)} rows)")
 
 
 # -------------------------------------------------
-# DATASET PREVIEW
-# -------------------------------------------------
-st.header("Dataset Overview")
-
-col1, col2 = st.columns(2)
-
-with col1:
-    st.subheader("Dataset Preview")
-    st.dataframe(df.head())
-
-with col2:
-    st.subheader("Dataset Shape")
-    st.write(f"Rows: {df.shape[0]}")
-    st.write(f"Columns: {df.shape[1]}")
-
-    st.subheader("Return Distribution")
-    st.write(df['is_returned'].value_counts())
-
-    returned_percent = df['is_returned'].mean() * 100
-    st.write(f"Returned Percentage: {returned_percent:.2f}%")
-
-
-# -------------------------------------------------
-# TRAIN TEST SPLIT
-# -------------------------------------------------
-X = df.drop('is_returned', axis=1)
-y = df['is_returned']
-
-X_train, X_test, y_train, y_test = train_test_split(
-    X,
-    y,
-    test_size=0.2,
-    random_state=42,
-    stratify=y
-)
-
-df_train = X_train.copy()
-df_train['is_returned'] = y_train
-
-
-# -------------------------------------------------
-# FEATURE COLUMNS
+# FEATURE SETUP
 # -------------------------------------------------
 numerical_cols = [
     'price',
@@ -109,174 +65,103 @@ categorical_cols = [
 
 
 # -------------------------------------------------
-# EDA SECTION
+# TRAINING PIPELINE (RUNS ONCE ONLY)
 # -------------------------------------------------
-st.header("Exploratory Data Analysis")
+@st.cache_resource
+def train_model(data):
 
-# Rating distribution
-fig, ax = plt.subplots(figsize=(8, 5))
+    X = data.drop('is_returned', axis=1)
+    y = data['is_returned']
 
-sns.countplot(
-    data=df_train,
-    x='rating',
-    order=sorted(df_train['rating'].dropna().unique()),
-    ax=ax
-)
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y,
+        test_size=0.2,
+        random_state=42,
+        stratify=y
+    )
 
-plt.title("Distribution of Product Ratings")
-plt.xlabel("Rating")
-plt.ylabel("Count")
-plt.xticks(rotation=45)
+    df_train = X_train.copy()
+    df_train['is_returned'] = y_train
 
-st.pyplot(fig)
+    keep_cols = numerical_cols + categorical_cols + ['is_returned']
 
+    df_train_clean = df_train[keep_cols].copy()
+    X_test_clean = X_test[keep_cols[:-1]].copy()
+    X_test_clean['is_returned'] = y_test
 
-# Top categories
-fig, ax = plt.subplots(figsize=(10, 5))
+    # Outlier clipping
+    for col in numerical_cols:
+        Q1 = df_train_clean[col].quantile(0.25)
+        Q3 = df_train_clean[col].quantile(0.75)
+        IQR = Q3 - Q1
 
-category_counts = df_train['category'].value_counts().head(10)
+        lower = Q1 - 1.5 * IQR
+        upper = Q3 + 1.5 * IQR
 
-sns.barplot(
-    x=category_counts.values,
-    y=category_counts.index,
-    ax=ax
-)
+        df_train_clean[col] = df_train_clean[col].clip(lower, upper)
+        X_test_clean[col] = X_test_clean[col].clip(lower, upper)
 
-plt.title("Top 10 Product Categories")
-plt.xlabel("Count")
-plt.ylabel("Category")
+    # Encoding
+    df_train_encoded = pd.get_dummies(
+        df_train_clean,
+        columns=categorical_cols,
+        drop_first=True
+    )
 
-st.pyplot(fig)
+    X_test_encoded = pd.get_dummies(
+        X_test_clean,
+        columns=categorical_cols,
+        drop_first=True
+    )
 
+    X_test_encoded = X_test_encoded.reindex(
+        columns=df_train_encoded.columns,
+        fill_value=0
+    )
 
-# Correlation heatmap
-fig, ax = plt.subplots(figsize=(10, 7))
+    X_train_final = df_train_encoded.drop('is_returned', axis=1)
+    y_train_final = df_train_encoded['is_returned']
 
-corr_matrix = df_train[numerical_cols].corr()
+    X_test_final = X_test_encoded.drop('is_returned', axis=1)
+    y_test_final = X_test_encoded['is_returned']
 
-sns.heatmap(
-    corr_matrix,
-    annot=True,
-    cmap='coolwarm',
-    fmt='.2f',
-    ax=ax
-)
+    # PCA
+    X_train_num = X_train_final[numerical_cols]
+    X_test_num = X_test_final[numerical_cols]
 
-plt.title("Correlation Heatmap")
+    categorical_dummy_cols = [
+        c for c in X_train_final.columns
+        if c not in numerical_cols
+    ]
 
-st.pyplot(fig)
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train_num)
+    X_test_scaled = scaler.transform(X_test_num)
 
+    pca = PCA(n_components=0.95)
+    X_train_pca = pca.fit_transform(X_train_scaled)
+    X_test_pca = pca.transform(X_test_scaled)
 
-# -------------------------------------------------
-# DATA CLEANING
-# -------------------------------------------------
-keep_cols = numerical_cols + categorical_cols + ['is_returned']
+    X_train_svm = np.hstack([
+        X_train_pca,
+        X_train_final[categorical_dummy_cols].values
+    ])
 
-df_train_clean = df_train[keep_cols].copy()
+    X_test_svm = np.hstack([
+        X_test_pca,
+        X_test_final[categorical_dummy_cols].values
+    ])
 
-X_test_clean = X_test[keep_cols[:-1]].copy()
-X_test_clean['is_returned'] = y_test
-
-
-# Handle outliers
-for col in numerical_cols:
-
-    Q1 = df_train_clean[col].quantile(0.25)
-    Q3 = df_train_clean[col].quantile(0.75)
-
-    IQR = Q3 - Q1
-
-    lower = Q1 - 1.5 * IQR
-    upper = Q3 + 1.5 * IQR
-
-    df_train_clean[col] = df_train_clean[col].clip(lower, upper)
-    X_test_clean[col] = X_test_clean[col].clip(lower, upper)
-
-
-# -------------------------------------------------
-# ENCODING
-# -------------------------------------------------
-df_train_encoded = pd.get_dummies(
-    df_train_clean,
-    columns=categorical_cols,
-    drop_first=True
-)
-
-X_test_encoded = pd.get_dummies(
-    X_test_clean,
-    columns=categorical_cols,
-    drop_first=True
-)
-
-X_test_encoded = X_test_encoded.reindex(
-    columns=df_train_encoded.columns,
-    fill_value=0
-)
-
-
-# Separate features and target
-X_train_final = df_train_encoded.drop('is_returned', axis=1)
-y_train_final = df_train_encoded['is_returned']
-
-X_test_final = X_test_encoded.drop('is_returned', axis=1)
-y_test_final = X_test_encoded['is_returned']
-
-
-# -------------------------------------------------
-# PCA
-# -------------------------------------------------
-st.header("PCA Dimensionality Reduction")
-
-X_train_num = X_train_final[numerical_cols]
-X_test_num = X_test_final[numerical_cols]
-
-categorical_dummy_cols = [
-    c for c in X_train_final.columns
-    if c not in numerical_cols
-]
-
-scaler = StandardScaler()
-
-X_train_scaled = scaler.fit_transform(X_train_num)
-X_test_scaled = scaler.transform(X_test_num)
-
-pca = PCA(n_components=0.95)
-
-X_train_pca = pca.fit_transform(X_train_scaled)
-X_test_pca = pca.transform(X_test_scaled)
-
-st.write(f"Original numerical features: {len(numerical_cols)}")
-st.write(f"PCA reduced dimensions: {X_train_pca.shape[1]}")
-
-# Combine PCA with categorical dummies
-X_train_svm = np.hstack([
-    X_train_pca,
-    X_train_final[categorical_dummy_cols].values
-])
-
-X_test_svm = np.hstack([
-    X_test_pca,
-    X_test_final[categorical_dummy_cols].values
-])
-
-
-# -------------------------------------------------
-# TRAIN MODEL
-# -------------------------------------------------
-st.header("Training SVM Model")
-
-with st.spinner("Training SVM model..."):
-
+    # Class weights
     classes = np.unique(y_train_final)
-
     weights = compute_class_weight(
         class_weight='balanced',
         classes=classes,
         y=y_train_final
     )
-
     class_weight_dict = dict(zip(classes, weights))
 
+    # MODEL (IMPORTANT FIX)
     svm_model = SVC(
         kernel='rbf',
         class_weight=class_weight_dict,
@@ -285,10 +170,34 @@ with st.spinner("Training SVM model..."):
     )
 
     svm_model.fit(X_train_svm, y_train_final)
-
     y_pred = svm_model.predict(X_test_svm)
 
-st.success("Model training completed!")
+    return (
+        svm_model,
+        scaler,
+        pca,
+        categorical_dummy_cols,
+        X_train_final,
+        y_test_final,
+        y_pred
+    )
+
+
+# -------------------------------------------------
+# TRAIN MODEL ONCE
+# -------------------------------------------------
+with st.spinner("Training model (only once)..."):
+    (
+        svm_model,
+        scaler,
+        pca,
+        categorical_dummy_cols,
+        X_train_final,
+        y_test_final,
+        y_pred
+    ) = train_model(df)
+
+st.success("Model ready!")
 
 
 # -------------------------------------------------
@@ -351,96 +260,31 @@ st.text(report)
 
 
 # -------------------------------------------------
-# USER PREDICTION SECTION
+# USER INPUT PREDICTION (FAST)
 # -------------------------------------------------
 st.header("Predict Product Return")
 
-st.write("Enter product details below to predict return probability.")
-
 col1, col2 = st.columns(2)
 
-# -------------------------
-# NUMERICAL INPUTS
-# -------------------------
 with col1:
-
-    price = st.number_input(
-        "Price",
-        min_value=0.0,
-        value=100.0
-    )
-
-    discount = st.number_input(
-        "Discount (%)",
-        min_value=0.0,
-        max_value=100.0,
-        value=10.0
-    )
-
-    final_price = st.number_input(
-        "Final Price",
-        min_value=0.0,
-        value=90.0
-    )
-
-    rating = st.slider(
-        "Product Rating",
-        min_value=1.0,
-        max_value=5.0,
-        value=4.0,
-        step=0.1
-    )
-
-    review_count = st.number_input(
-        "Review Count",
-        min_value=0,
-        value=100
-    )
+    price = st.number_input("Price", 0.0, 10000.0, 100.0)
+    discount = st.number_input("Discount", 0.0, 100.0, 10.0)
+    final_price = st.number_input("Final Price", 0.0, 10000.0, 90.0)
+    rating = st.slider("Rating", 1.0, 5.0, 4.0)
+    review_count = st.number_input("Review Count", 0, 100000, 100)
 
 with col2:
+    stock = st.number_input("Stock", 0, 10000, 50)
+    seller_rating = st.slider("Seller Rating", 1.0, 5.0, 4.5)
+    shipping_time_days = st.number_input("Shipping Days", 1, 30, 3)
 
-    stock = st.number_input(
-        "Stock",
-        min_value=0,
-        value=50
-    )
-
-    seller_rating = st.slider(
-        "Seller Rating",
-        min_value=1.0,
-        max_value=5.0,
-        value=4.5,
-        step=0.1
-    )
-
-    shipping_time_days = st.number_input(
-        "Shipping Time (Days)",
-        min_value=1,
-        value=3
-    )
-
-    category = st.selectbox(
-        "Category",
-        sorted(df['category'].dropna().unique())
-    )
-
-    brand = st.selectbox(
-        "Brand",
-        sorted(df['brand'].dropna().unique())
-    )
-
-    payment_method = st.selectbox(
-        "Payment Method",
-        sorted(df['payment_method'].dropna().unique())
-    )
+    category = st.selectbox("Category", sorted(df['category'].dropna().unique()))
+    brand = st.selectbox("Brand", sorted(df['brand'].dropna().unique()))
+    payment_method = st.selectbox("Payment Method", sorted(df['payment_method'].dropna().unique()))
 
 
-# -------------------------
-# PREDICTION BUTTON
-# -------------------------
 if st.button("Predict Return Probability"):
 
-    # Create dataframe
     input_df = pd.DataFrame({
         'price': [price],
         'discount': [discount],
@@ -455,66 +299,38 @@ if st.button("Predict Return Probability"):
         'payment_method': [payment_method]
     })
 
-    # Outlier clipping
-    for col in numerical_cols:
-
-        Q1 = df_train_clean[col].quantile(0.25)
-        Q3 = df_train_clean[col].quantile(0.75)
-
-        IQR = Q3 - Q1
-
-        lower = Q1 - 1.5 * IQR
-        upper = Q3 + 1.5 * IQR
-
-        input_df[col] = input_df[col].clip(lower, upper)
-
-    # One-hot encoding
+    # Encoding
     input_encoded = pd.get_dummies(
         input_df,
         columns=categorical_cols,
         drop_first=True
     )
 
-    # Match training columns
     input_encoded = input_encoded.reindex(
         columns=X_train_final.columns,
         fill_value=0
     )
 
-    # Numerical features
     input_num = input_encoded[numerical_cols]
 
-    # Scaling
     input_scaled = scaler.transform(input_num)
-
-    # PCA transform
     input_pca = pca.transform(input_scaled)
 
-    # Categorical features
     input_cat = input_encoded[categorical_dummy_cols].values
 
-    # Final model input
-    input_svm = np.hstack([
-        input_pca,
-        input_cat
-    ])
+    input_svm = np.hstack([input_pca, input_cat])
 
-    # Prediction
     prediction = svm_model.predict(input_svm)[0]
 
-    probability = svm_model.predict_proba(input_svm)[0][1]
+    # FAST probability (no heavy calibration)
+    decision = svm_model.decision_function(input_svm)[0]
+    probability = 1 / (1 + np.exp(-decision))
 
-    # -------------------------
-    # OUTPUT
-    # -------------------------
-    st.subheader("Prediction Result")
+    st.subheader("Result")
 
     if prediction == 1:
-        st.error("This product is likely to be RETURNED")
+        st.error("LIKELY RETURNED")
     else:
-        st.success("This product is likely to NOT be returned")
+        st.success("LIKELY NOT RETURNED")
 
-    st.metric(
-        "Return Probability",
-        f"{probability * 100:.2f}%"
-    )
+    st.metric("Return Probability", f"{probability * 100:.2f}%")
