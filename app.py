@@ -288,7 +288,6 @@ if st.button("Predict Return Probability"):
     input_df = pd.DataFrame({
         'price': [price],
         'discount': [discount],
-        'final_price': [final_price],
         'rating': [rating],
         'review_count': [review_count],
         'stock': [stock],
