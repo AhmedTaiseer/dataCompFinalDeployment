@@ -18,167 +18,253 @@ from sklearn.metrics import (
 )
 from sklearn.utils.class_weight import compute_class_weight
 
-st.set_page_config(page_title="Amazon Return Predictor", layout="wide")
+
+# -------------------------------------------------
+# PAGE CONFIG
+# -------------------------------------------------
+st.set_page_config(
+    page_title="Amazon Return Predictor",
+    layout="wide"
+)
 
 st.title("Amazon Product Return Prediction")
-st.write("Upload your Amazon ecommerce CSV dataset.")
+st.write("Machine Learning model using PCA + SVM")
 
-uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
-if uploaded_file is not None:
+# -------------------------------------------------
+# LOAD DATASET
+# -------------------------------------------------
+@st.cache_data
+def load_data():
+    df = pd.read_csv("amazon_sample_15k.csv")
+    return df
 
-    # Load dataset
-    df_full = pd.read_csv("amazon_sample_15k.csv")
-    df = df_full.sample(n=min(15000, len(df_full)), random_state=42)
+with st.spinner("Loading dataset..."):
+    df = load_data()
 
-    st.success(f"Loaded {len(df)} rows")
+st.success(f"Dataset loaded successfully! ({len(df)} rows)")
 
+
+# -------------------------------------------------
+# DATASET PREVIEW
+# -------------------------------------------------
+st.header("Dataset Overview")
+
+col1, col2 = st.columns(2)
+
+with col1:
     st.subheader("Dataset Preview")
     st.dataframe(df.head())
 
-    # Split
-    X = df.drop('is_returned', axis=1)
-    y = df['is_returned']
+with col2:
+    st.subheader("Dataset Shape")
+    st.write(f"Rows: {df.shape[0]}")
+    st.write(f"Columns: {df.shape[1]}")
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X,
-        y,
-        test_size=0.2,
-        random_state=42,
-        stratify=y
-    )
+    st.subheader("Return Distribution")
+    st.write(df['is_returned'].value_counts())
 
-    df_train = X_train.copy()
-    df_train['is_returned'] = y_train
+    returned_percent = df['is_returned'].mean() * 100
+    st.write(f"Returned Percentage: {returned_percent:.2f}%")
 
-    numerical_cols = [
-        'price',
-        'discount',
-        'final_price',
-        'rating',
-        'review_count',
-        'stock',
-        'seller_rating',
-        'shipping_time_days'
-    ]
 
-    categorical_cols = [
-        'category',
-        'brand',
-        'payment_method'
-    ]
+# -------------------------------------------------
+# TRAIN TEST SPLIT
+# -------------------------------------------------
+X = df.drop('is_returned', axis=1)
+y = df['is_returned']
 
-    # --------------------
-    # EDA SECTION
-    # --------------------
-    st.header("Exploratory Data Analysis")
+X_train, X_test, y_train, y_test = train_test_split(
+    X,
+    y,
+    test_size=0.2,
+    random_state=42,
+    stratify=y
+)
 
-    col1, col2 = st.columns(2)
+df_train = X_train.copy()
+df_train['is_returned'] = y_train
 
-    with col1:
-        fig, ax = plt.subplots(figsize=(6,4))
-        sns.countplot(
-            data=df_train,
-            x='rating',
-            order=sorted(df_train['rating'].dropna().unique()),
-            ax=ax
-        )
-        plt.xticks(rotation=45)
-        plt.title("Rating Distribution")
-        st.pyplot(fig)
 
-    with col2:
-        fig, ax = plt.subplots(figsize=(6,4))
-        category_counts = df_train['category'].value_counts().head(10)
-        sns.barplot(
-            x=category_counts.values,
-            y=category_counts.index,
-            ax=ax
-        )
-        plt.title("Top Categories")
-        st.pyplot(fig)
+# -------------------------------------------------
+# FEATURE COLUMNS
+# -------------------------------------------------
+numerical_cols = [
+    'price',
+    'discount',
+    'final_price',
+    'rating',
+    'review_count',
+    'stock',
+    'seller_rating',
+    'shipping_time_days'
+]
 
-    # --------------------
-    # CLEANING
-    # --------------------
-    keep_cols = numerical_cols + categorical_cols + ['is_returned']
+categorical_cols = [
+    'category',
+    'brand',
+    'payment_method'
+]
 
-    df_train_clean = df_train[keep_cols].copy()
-    X_test_clean = X_test[keep_cols[:-1]].copy()
-    X_test_clean['is_returned'] = y_test
 
-    # Outlier clipping
-    for col in numerical_cols:
-        Q1 = df_train_clean[col].quantile(0.25)
-        Q3 = df_train_clean[col].quantile(0.75)
+# -------------------------------------------------
+# EDA SECTION
+# -------------------------------------------------
+st.header("Exploratory Data Analysis")
 
-        IQR = Q3 - Q1
+# Rating distribution
+fig, ax = plt.subplots(figsize=(8, 5))
 
-        lower = Q1 - 1.5 * IQR
-        upper = Q3 + 1.5 * IQR
+sns.countplot(
+    data=df_train,
+    x='rating',
+    order=sorted(df_train['rating'].dropna().unique()),
+    ax=ax
+)
 
-        df_train_clean[col] = df_train_clean[col].clip(lower, upper)
-        X_test_clean[col] = X_test_clean[col].clip(lower, upper)
+plt.title("Distribution of Product Ratings")
+plt.xlabel("Rating")
+plt.ylabel("Count")
+plt.xticks(rotation=45)
 
-    # One-hot encoding
-    df_train_encoded = pd.get_dummies(
-        df_train_clean,
-        columns=categorical_cols,
-        drop_first=True
-    )
+st.pyplot(fig)
 
-    X_test_encoded = pd.get_dummies(
-        X_test_clean,
-        columns=categorical_cols,
-        drop_first=True
-    )
 
-    X_test_encoded = X_test_encoded.reindex(
-        columns=df_train_encoded.columns,
-        fill_value=0
-    )
+# Top categories
+fig, ax = plt.subplots(figsize=(10, 5))
 
-    X_train_final = df_train_encoded.drop('is_returned', axis=1)
-    y_train_final = df_train_encoded['is_returned']
+category_counts = df_train['category'].value_counts().head(10)
 
-    X_test_final = X_test_encoded.drop('is_returned', axis=1)
-    y_test_final = X_test_encoded['is_returned']
+sns.barplot(
+    x=category_counts.values,
+    y=category_counts.index,
+    ax=ax
+)
 
-    # --------------------
-    # PCA
-    # --------------------
-    X_train_num = X_train_final[numerical_cols]
-    X_test_num = X_test_final[numerical_cols]
+plt.title("Top 10 Product Categories")
+plt.xlabel("Count")
+plt.ylabel("Category")
 
-    categorical_dummy_cols = [
-        c for c in X_train_final.columns
-        if c not in numerical_cols
-    ]
+st.pyplot(fig)
 
-    scaler = StandardScaler()
 
-    X_train_scaled = scaler.fit_transform(X_train_num)
-    X_test_scaled = scaler.transform(X_test_num)
+# Correlation heatmap
+fig, ax = plt.subplots(figsize=(10, 7))
 
-    pca = PCA(n_components=0.95)
+corr_matrix = df_train[numerical_cols].corr()
 
-    X_train_pca = pca.fit_transform(X_train_scaled)
-    X_test_pca = pca.transform(X_test_scaled)
+sns.heatmap(
+    corr_matrix,
+    annot=True,
+    cmap='coolwarm',
+    fmt='.2f',
+    ax=ax
+)
 
-    X_train_svm = np.hstack([
-        X_train_pca,
-        X_train_final[categorical_dummy_cols].values
-    ])
+plt.title("Correlation Heatmap")
 
-    X_test_svm = np.hstack([
-        X_test_pca,
-        X_test_final[categorical_dummy_cols].values
-    ])
+st.pyplot(fig)
 
-    # --------------------
-    # TRAIN MODEL
-    # --------------------
-    st.header("Training SVM Model")
+
+# -------------------------------------------------
+# DATA CLEANING
+# -------------------------------------------------
+keep_cols = numerical_cols + categorical_cols + ['is_returned']
+
+df_train_clean = df_train[keep_cols].copy()
+
+X_test_clean = X_test[keep_cols[:-1]].copy()
+X_test_clean['is_returned'] = y_test
+
+
+# Handle outliers
+for col in numerical_cols:
+
+    Q1 = df_train_clean[col].quantile(0.25)
+    Q3 = df_train_clean[col].quantile(0.75)
+
+    IQR = Q3 - Q1
+
+    lower = Q1 - 1.5 * IQR
+    upper = Q3 + 1.5 * IQR
+
+    df_train_clean[col] = df_train_clean[col].clip(lower, upper)
+    X_test_clean[col] = X_test_clean[col].clip(lower, upper)
+
+
+# -------------------------------------------------
+# ENCODING
+# -------------------------------------------------
+df_train_encoded = pd.get_dummies(
+    df_train_clean,
+    columns=categorical_cols,
+    drop_first=True
+)
+
+X_test_encoded = pd.get_dummies(
+    X_test_clean,
+    columns=categorical_cols,
+    drop_first=True
+)
+
+X_test_encoded = X_test_encoded.reindex(
+    columns=df_train_encoded.columns,
+    fill_value=0
+)
+
+
+# Separate features and target
+X_train_final = df_train_encoded.drop('is_returned', axis=1)
+y_train_final = df_train_encoded['is_returned']
+
+X_test_final = X_test_encoded.drop('is_returned', axis=1)
+y_test_final = X_test_encoded['is_returned']
+
+
+# -------------------------------------------------
+# PCA
+# -------------------------------------------------
+st.header("PCA Dimensionality Reduction")
+
+X_train_num = X_train_final[numerical_cols]
+X_test_num = X_test_final[numerical_cols]
+
+categorical_dummy_cols = [
+    c for c in X_train_final.columns
+    if c not in numerical_cols
+]
+
+scaler = StandardScaler()
+
+X_train_scaled = scaler.fit_transform(X_train_num)
+X_test_scaled = scaler.transform(X_test_num)
+
+pca = PCA(n_components=0.95)
+
+X_train_pca = pca.fit_transform(X_train_scaled)
+X_test_pca = pca.transform(X_test_scaled)
+
+st.write(f"Original numerical features: {len(numerical_cols)}")
+st.write(f"PCA reduced dimensions: {X_train_pca.shape[1]}")
+
+# Combine PCA with categorical dummies
+X_train_svm = np.hstack([
+    X_train_pca,
+    X_train_final[categorical_dummy_cols].values
+])
+
+X_test_svm = np.hstack([
+    X_test_pca,
+    X_test_final[categorical_dummy_cols].values
+])
+
+
+# -------------------------------------------------
+# TRAIN MODEL
+# -------------------------------------------------
+st.header("Training SVM Model")
+
+with st.spinner("Training SVM model..."):
 
     classes = np.unique(y_train_final)
 
@@ -200,45 +286,63 @@ if uploaded_file is not None:
 
     y_pred = svm_model.predict(X_test_svm)
 
-    # --------------------
-    # METRICS
-    # --------------------
-    st.header("Model Evaluation")
+st.success("Model training completed!")
 
-    accuracy = accuracy_score(y_test_final, y_pred)
-    precision = precision_score(y_test_final, y_pred)
-    recall = recall_score(y_test_final, y_pred)
-    f1 = f1_score(y_test_final, y_pred)
 
-    c1, c2, c3, c4 = st.columns(4)
+# -------------------------------------------------
+# EVALUATION
+# -------------------------------------------------
+st.header("Model Evaluation")
 
-    c1.metric("Accuracy", f"{accuracy:.4f}")
-    c2.metric("Precision", f"{precision:.4f}")
-    c3.metric("Recall", f"{recall:.4f}")
-    c4.metric("F1 Score", f"{f1:.4f}")
+accuracy = accuracy_score(y_test_final, y_pred)
+precision = precision_score(y_test_final, y_pred, zero_division=0)
+recall = recall_score(y_test_final, y_pred, zero_division=0)
+f1 = f1_score(y_test_final, y_pred, zero_division=0)
 
-    # Confusion matrix
-    cm = confusion_matrix(y_test_final, y_pred)
+c1, c2, c3, c4 = st.columns(4)
 
-    fig, ax = plt.subplots(figsize=(6,4))
-    sns.heatmap(
-        cm,
-        annot=True,
-        fmt='d',
-        cmap='Blues',
-        xticklabels=['Not Returned', 'Returned'],
-        yticklabels=['Not Returned', 'Returned'],
-        ax=ax
-    )
-    plt.title("Confusion Matrix")
-    plt.xlabel("Predicted")
-    plt.ylabel("Actual")
-    st.pyplot(fig)
+c1.metric("Accuracy", f"{accuracy:.4f}")
+c2.metric("Precision", f"{precision:.4f}")
+c3.metric("Recall", f"{recall:.4f}")
+c4.metric("F1 Score", f"{f1:.4f}")
 
-    st.subheader("Classification Report")
-    report = classification_report(
-        y_test_final,
-        y_pred,
-        target_names=['Not Returned', 'Returned']
-    )
-    st.text(report)
+
+# -------------------------------------------------
+# CONFUSION MATRIX
+# -------------------------------------------------
+st.subheader("Confusion Matrix")
+
+cm = confusion_matrix(y_test_final, y_pred)
+
+fig, ax = plt.subplots(figsize=(7, 5))
+
+sns.heatmap(
+    cm,
+    annot=True,
+    fmt='d',
+    cmap='Blues',
+    xticklabels=['Not Returned', 'Returned'],
+    yticklabels=['Not Returned', 'Returned'],
+    ax=ax
+)
+
+plt.xlabel("Predicted")
+plt.ylabel("Actual")
+plt.title("Confusion Matrix")
+
+st.pyplot(fig)
+
+
+# -------------------------------------------------
+# CLASSIFICATION REPORT
+# -------------------------------------------------
+st.subheader("Classification Report")
+
+report = classification_report(
+    y_test_final,
+    y_pred,
+    target_names=['Not Returned', 'Returned'],
+    zero_division=0
+)
+
+st.text(report)
