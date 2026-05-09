@@ -39,6 +39,7 @@ def load_data():
     df = pd.read_csv("amazon_sample_15k.csv")
     return df
 
+
 with st.spinner("Loading dataset..."):
     df = load_data()
 
@@ -279,6 +280,7 @@ with st.spinner("Training SVM model..."):
     svm_model = SVC(
         kernel='rbf',
         class_weight=class_weight_dict,
+        probability=True,
         random_state=42
     )
 
@@ -346,3 +348,173 @@ report = classification_report(
 )
 
 st.text(report)
+
+
+# -------------------------------------------------
+# USER PREDICTION SECTION
+# -------------------------------------------------
+st.header("Predict Product Return")
+
+st.write("Enter product details below to predict return probability.")
+
+col1, col2 = st.columns(2)
+
+# -------------------------
+# NUMERICAL INPUTS
+# -------------------------
+with col1:
+
+    price = st.number_input(
+        "Price",
+        min_value=0.0,
+        value=100.0
+    )
+
+    discount = st.number_input(
+        "Discount (%)",
+        min_value=0.0,
+        max_value=100.0,
+        value=10.0
+    )
+
+    final_price = st.number_input(
+        "Final Price",
+        min_value=0.0,
+        value=90.0
+    )
+
+    rating = st.slider(
+        "Product Rating",
+        min_value=1.0,
+        max_value=5.0,
+        value=4.0,
+        step=0.1
+    )
+
+    review_count = st.number_input(
+        "Review Count",
+        min_value=0,
+        value=100
+    )
+
+with col2:
+
+    stock = st.number_input(
+        "Stock",
+        min_value=0,
+        value=50
+    )
+
+    seller_rating = st.slider(
+        "Seller Rating",
+        min_value=1.0,
+        max_value=5.0,
+        value=4.5,
+        step=0.1
+    )
+
+    shipping_time_days = st.number_input(
+        "Shipping Time (Days)",
+        min_value=1,
+        value=3
+    )
+
+    category = st.selectbox(
+        "Category",
+        sorted(df['category'].dropna().unique())
+    )
+
+    brand = st.selectbox(
+        "Brand",
+        sorted(df['brand'].dropna().unique())
+    )
+
+    payment_method = st.selectbox(
+        "Payment Method",
+        sorted(df['payment_method'].dropna().unique())
+    )
+
+
+# -------------------------
+# PREDICTION BUTTON
+# -------------------------
+if st.button("Predict Return Probability"):
+
+    # Create dataframe
+    input_df = pd.DataFrame({
+        'price': [price],
+        'discount': [discount],
+        'final_price': [final_price],
+        'rating': [rating],
+        'review_count': [review_count],
+        'stock': [stock],
+        'seller_rating': [seller_rating],
+        'shipping_time_days': [shipping_time_days],
+        'category': [category],
+        'brand': [brand],
+        'payment_method': [payment_method]
+    })
+
+    # Outlier clipping
+    for col in numerical_cols:
+
+        Q1 = df_train_clean[col].quantile(0.25)
+        Q3 = df_train_clean[col].quantile(0.75)
+
+        IQR = Q3 - Q1
+
+        lower = Q1 - 1.5 * IQR
+        upper = Q3 + 1.5 * IQR
+
+        input_df[col] = input_df[col].clip(lower, upper)
+
+    # One-hot encoding
+    input_encoded = pd.get_dummies(
+        input_df,
+        columns=categorical_cols,
+        drop_first=True
+    )
+
+    # Match training columns
+    input_encoded = input_encoded.reindex(
+        columns=X_train_final.columns,
+        fill_value=0
+    )
+
+    # Numerical features
+    input_num = input_encoded[numerical_cols]
+
+    # Scaling
+    input_scaled = scaler.transform(input_num)
+
+    # PCA transform
+    input_pca = pca.transform(input_scaled)
+
+    # Categorical features
+    input_cat = input_encoded[categorical_dummy_cols].values
+
+    # Final model input
+    input_svm = np.hstack([
+        input_pca,
+        input_cat
+    ])
+
+    # Prediction
+    prediction = svm_model.predict(input_svm)[0]
+
+    probability = svm_model.predict_proba(input_svm)[0][1]
+
+    # -------------------------
+    # OUTPUT
+    # -------------------------
+    st.subheader("Prediction Result")
+
+    if prediction == 1:
+        st.error("This product is likely to be RETURNED")
+    else:
+        st.success("This product is likely to NOT be returned")
+
+    st.metric(
+        "Return Probability",
+        f"{probability * 100:.2f}%"
+    )
